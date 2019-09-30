@@ -2,9 +2,14 @@ require 'fileutils'
 require 'logger'
 require 'rpi_gpio'
 
+require_relative './blower_logging'
+
 class BathroomBlower
-  MOTION_STAY_ON = 3 * 60
+  include BlowerLogging
+
+  MOTION_STAY_ON = 0.5 * 60
   OVERRIDE_TIME = 15 * 60
+  FUMIGATE_LENGTH = 10 #seconds
 
   # Pins
   RELAY_1 = 3
@@ -25,24 +30,14 @@ class BathroomBlower
   )
 
   def initialize
-    setup_logger
-
     @fan_state = OFF
     @override_toggled_at = @motion_detected_at = Time.new(1,1,1,1)
 
-    RPi::GPIO.reset
-    @logger.info 'GPIO Board reset ====================='
+    setup_logger
 
-    RPi::GPIO.set_numbering :board
+    setup_board
+    setup_pins
 
-    RPi::GPIO.setup PIR_PIN, as: :input, pull: :down
-    RPi::GPIO.setup OVERRIDE_PIN, as: :input, pull: :down
-
-
-    RPi::GPIO.setup RELAY_1, as: :output, initialize: :low
-    RPi::GPIO.setup RELAY_2, as: :output, initialize: :low
-
-    @logger.info 'Pins setup ==========================='
     @logger.info 'Starting Fan program ================='
   end
 
@@ -78,13 +73,13 @@ class BathroomBlower
 
     return ON if (
       ( # Weekdays, 7-9AM, 3-10pm, every 30 minutes, for 30s
-        time_now.sec.between?(0, 30) &&
+        time_now.sec.between?(0, FUMIGATE_LENGTH) &&
         [00, 30].include?(time_now.min) &&
         (time_now.hour.between?(7, 9) || time_now.hour.between?(15, 22)) &&
         ['MON','TUE','WED','THU','FRI'].include?(time_now.strftime('%^a'))
       ) ||
       ( # Weekends, 7am-10pm, every 30 minutes, for 30s
-        time_now.sec.between?(0, 30) &&
+        time_now.sec.between?(0, FUMIGATE_LENGTH) &&
         [00, 30].include?(time_now.min) &&
         (time_now.hour.between?(7, 22)) &&
         ['SAT', 'SUN'].include?(time_now.strftime('%^a'))
@@ -117,20 +112,22 @@ class BathroomBlower
     log_fan(state)
   end
 
-  def log_fan(state)
-    return if state == previous_fan_state
+  ###### Setup Functions
 
-    @logger.info("Fan has turned #{state == ON ? 'ON' : 'OFF'}")
-    @previous_fan_state = state
+  def setup_board
+    RPi::GPIO.reset
+    @logger.info 'GPIO Board reset ====================='
   end
 
-  def setup_logger
-    logpath = File.join(__dir__, 'log', 'production.log')
-    dir = File.dirname(logpath)
+  def setup_pins
+    RPi::GPIO.set_numbering :board
 
-    FileUtils.mkdir_p(dir) unless File.directory?(dir)
+    RPi::GPIO.setup PIR_PIN, as: :input, pull: :down
+    RPi::GPIO.setup OVERRIDE_PIN, as: :input, pull: :down
 
-    @logger = Logger.new(logpath)
-    @logger.level = Logger::INFO
+    RPi::GPIO.setup RELAY_1, as: :output, initialize: :low
+    RPi::GPIO.setup RELAY_2, as: :output, initialize: :low
+
+    @logger.info 'Pins setup ==========================='
   end
 end
