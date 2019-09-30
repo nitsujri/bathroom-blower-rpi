@@ -2,7 +2,11 @@ require 'fileutils'
 require 'logger'
 require 'rpi_gpio'
 
+require_relative './blower_logging'
+
 class BathroomBlower
+  include BlowerLogging
+
   MOTION_STAY_ON = 3 * 60
   OVERRIDE_TIME = 15 * 60
 
@@ -16,7 +20,6 @@ class BathroomBlower
   OFF = false
 
   attr_reader(
-    :logger,
     :previous_fan_state,    # Holds the last state change, only updated on change
     :motion_detected_at,
     :override_toggled_at,
@@ -25,29 +28,20 @@ class BathroomBlower
   )
 
   def initialize
-    setup_logger
-
     @fan_state = OFF
     @override_toggled_at = @motion_detected_at = Time.new(1,1,1,1)
 
-    RPi::GPIO.reset
-    @logger.info 'GPIO Board reset ====================='
+    setup_logger
 
-    RPi::GPIO.set_numbering :board
+    setup_board
+    setup_pins
+    setup_events
 
-    RPi::GPIO.setup PIR_PIN, as: :input, pull: :down
-    RPi::GPIO.setup OVERRIDE_PIN, as: :input, pull: :down
-
-
-    RPi::GPIO.setup RELAY_1, as: :output, initialize: :low
-    RPi::GPIO.setup RELAY_2, as: :output, initialize: :low
-
-    @logger.info 'Pins setup ==========================='
     @logger.info 'Starting Fan program ================='
   end
 
   def run!
-    fan_state = check_motion || regular_fumigation
+    fan_state = motion_detected? || fumigation_running?
 
     fan_state = override_output if override?
 
@@ -56,24 +50,31 @@ class BathroomBlower
 
   private
 
-  def check_motion
+  def detected_motion
+    @motion_detected_at = Time.now
+
+    @logger.info 'Motion DETECTED'
+  end
+
+  def detected_override
+    @override_toggled_at = Time.now
+    @override_output = !current_fan_state
+
+    @logger.info 'Override TOGGLED'
+  end
+
+  def motion_detected?
     time_now = Time.now
 
     # Motion lockout time 10pm - 7am
     return OFF if time_now.hour.between?(22, 24) || time_now.hour.between?(0, 7)
-
-    # Set latest time seen if there's motion
-    if RPi::GPIO.high?(PIR_PIN)
-      @motion_detected_at = time_now
-      return ON
-    end
 
     return ON if motion_detected_at + MOTION_STAY_ON > time_now
 
     OFF
   end
 
-  def regular_fumigation
+  def fumigation_running?
     time_now = Time.now
 
     return ON if (
@@ -95,16 +96,12 @@ class BathroomBlower
   end
 
   def override?
-    if RPi::GPIO.high?(OVERRIDE_PIN)
-      @override_toggled_at = Time.now
-      @override_output = !current_fan_state
-    end
-
     return true if override_toggled_at + OVERRIDE_TIME > Time.now
 
     false
   end
 
+  # Primary board output
   def fan_power(state)
     [RELAY_1, RELAY_2].each do |relay|
       # Flip the state because that's how the Relays work
@@ -117,20 +114,32 @@ class BathroomBlower
     log_fan(state)
   end
 
-  def log_fan(state)
-    return if state == previous_fan_state
+  ###### Setup Functions
 
-    @logger.info("Fan has turned #{state == ON ? 'ON' : 'OFF'}")
-    @previous_fan_state = state
+  def setup_board
+    RPi::GPIO.reset
+    @logger.info 'GPIO Board reset ====================='
   end
 
-  def setup_logger
-    logpath = File.join(__dir__, 'log', 'production.log')
-    dir = File.dirname(logpath)
+  def setup_events
+    RPi::GPIO.add_edge_detect PIR_PIN, RPi::GPIO.RISING
+    RPi::GPIO.add_edge_detect OVERRIDE_PIN, RPi::GPIO.RISING
 
-    FileUtils.mkdir_p(dir) unless File.directory?(dir)
+    RPi::GPIO.add_edge_callback PIR_PIN, detected_motion
+    RPi::GPIO.add_edge_callback OVERRIDE_PIN, detected_override
 
-    @logger = Logger.new(logpath)
-    @logger.level = Logger::INFO
+    @logger.info 'Events Added ========================='
+  end
+
+  def setup_pins
+    RPi::GPIO.set_numbering :board
+
+    RPi::GPIO.setup PIR_PIN, as: :input, pull: :down
+    RPi::GPIO.setup OVERRIDE_PIN, as: :input, pull: :down
+
+    RPi::GPIO.setup RELAY_1, as: :output, initialize: :low
+    RPi::GPIO.setup RELAY_2, as: :output, initialize: :low
+
+    @logger.info 'Pins setup ==========================='
   end
 end
